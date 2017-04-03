@@ -1,0 +1,44 @@
+Hi,
+I've been looking into the face recognition module project,and I have narrowed down the trickier parts of the project. Keeping aside the Api and schema design(which are important), I think the following choices,that present themselves in most deployment of ML models are worth discussing over. I'm writing this so the community as a whole can discuss them before including them in the proposal.
+
+Use Case 1 : 
+The user sends a series of images to the Flask Api endpoint. Since the task is time-intensive, it gets pushed onto a task queue.One of the primary tasks would be to implement a pipeline,that detects faces from an image, resizes them,passes them onto tensorflow, obtains the embeddings and then passes them onto the search facility.(Discussed below). For the task queue, celery seems like a nice choice. It integrates well with Flask,is battle tested,distributed(making scalability simpler) and has excellent documentation. 
+As for the message broker, it's a choice between redis and rabbitmq.  Rabbitmq seems better, mainly due to the fact that its persistence and has buiiltin support for priorities out of the box.(Usage of priorities is explained below).
+
+Issue 1:
+ I tried integrating flask,rabbitmq and celery with the facenet model here. The model is 100 mbs and has a loading time of 40-50 seconds. You can amortize this cost by doing this once on start up time(using the worker_init signal)(and also hope that theOS does not swap it out of RAM into the disk when the memory consumption is high)
+
+I think one method that seems worth trying is to quantize the network weights. That slashes the model size by 75%.It does affect the accuracy ,so  part of the project can be to carefully document the trade-offs and see whether the accuracy loss is worth it. I think this is important because celery places a hard coded timeout limit on all signal handlers(worker_init).Infact  ,I had to manually change this value in the code,which seems like a ugly hack.So,investigating this seems like a worthwhile inestment.
+
+Use Case 2: Deploying the model.
+We have two options with the deployment -
+1.)Simply use tensorflow, implying have the appropriate celery worker take the image and perform whatever actions needed.The code I have running currently uses this approach.
+2.) Use tensorflow serving. It has inbuilt support for hot loading models and was basically built for deploying tensorflow models. I'm having some troubles etting it up currently,but I'll try to get it up and running after I'm done with the initial design of the proposal.
+
+Use Case 3: Given a name or any other details, it suggests matching profiles. 
+This would basically be  a post request and requires a simple db lookup.
+Q.1) What kind of details could the client post? What kind of searching is being referred to? Meaning would a sql search query do, or would we need a dedicated search system. 
+
+Use Case 4: User posts an image to a Flask endpoint and matching profiles are This has to real-time,as in the client expects a response as soon as possible.
+ Workflow: Detect face from image.(Maybe we could set an additional parameter in the json request,which the client could set if they are certain that the image contains mainly a face and not much background noise). -> Resize the image. -> Run a forward pass on facenet -> Use the 128 dimensional embedding obtained to search.
+
+It is this last part that I'd like to discuss. Since we already have a db of face embeddings, this is essentially a nearest neighbour search or similarity search.(Something to experiment with would be the choice of a metric,euclidean,cosine similarity etc). Doing it efficiently would require maintaining an index of all embeddings. 
+
+1.)I tried out panns on a sample batch of 100 face embeddings, and it seems to be reasonably efficient . I'll try to benchmark the results and upload it as soon as I can.
+2.)There's also faiss, that was open-sourced by facebook and supports GPU. I expect it to be more efficient,ut it seems like overkill,because facebook uses it to do similarity search on a scale of billions.
+If there's some other library that serves our purpose,do mention it.
+
+Issue 2: The biggest issue wit deploying deep learning models in production is their latency,mainly due to their large memory footprint and the large amount of flops they require to make a single inference. I bench-marked facenet on my system.(Note that I have a broadwell i3, 4 gb of RAM with avx2 support and I compiled tensorflow with avx support.The actual performance depends on the hardware on which the system will be deployed.This performance could be,however, indicative of the speed we expect to achieve) . It took 1 second for a single forward pass through the convnet for a batch size = 1.This means that it would take 1 second to generate embeddings for a face.
+
+ 1.)As for use case 4, batching multiple images is not an option. Therefore, I think utilising the graph transform tool to optimise the model for inference time seems worthy.
+  I'll try to get some numbers before the proposal deadline,to see if it leads to any worthwhile improvements in inference time.The graph transform tool consists of a set of scripts that remove repeated,constant nodes etc which might reduce performance in production and is as simple as running the provided scripts on the graphdef files.I think carefully documenting the effects should be relevant to the proposal.
+ 
+ 2.)As for use case 1, batching seems like a relevant option. In my tests, batching(in sizes of 50 or 100) images lead to significant boosts in forward time passes,but it comes at a cost of increased memory footprint. This kind of trade-off ought to be configurable through a config file.(As an aside tensorflow serving does support batching). The graph transform optimisation that were  mentioned above will be applied to this.
+
+These were some of the more important decisions that I had to make while trying to come up with an architecture for the service. It obviously misses out some very important details,such as the schema of the db ,specifics of storage of images and profiles etc. But I think the above topics were unique to this project,and in general reflect the problems that occur when dealing with Machine Learning systems in production. I hope you will answer my questions and commnet on my architectural decisions as quickly as possible,so I can begin working on the rest of the details of the project.  
+
+I'll upload the sample code that I used to test everything that I mentioned in a couple of hours.
+
+Hoping for a meaningful discussion.
+Harshit Khatri
+
